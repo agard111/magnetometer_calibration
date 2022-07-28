@@ -1,10 +1,17 @@
 import numpy as np
 from scipy import linalg
 from matplotlib import pyplot as plt
+import pandas as pd
+import math
+import warnings
+
+warnings.filterwarnings("ignore")
 
 
 
 class Magnetometer(object):
+
+    plot_count = 0
     
     '''
         To obtain Gravitation Field (raw format):
@@ -39,22 +46,87 @@ class Magnetometer(object):
         -  https://www.best-microcontroller-projects.com/hmc5883l.html
 
     '''
-    MField = 110
+    MField = 300
 
     def __init__(self, F=MField): 
-
 
         # initialize values
         self.F   = F
         self.b   = np.zeros([3, 1])
         self.A_1 = np.eye(3)
-        
-    def run(self):
-        data = np.loadtxt("mag_out.txt",delimiter=',')
-        print("shape of data:",data.shape)
-        #print("datatype of data:",data.dtype)
+
+    def split(self, data):
+        """
+        Break out the x, y, and z into it's own array for plotting
+        """
+        xx = []
+        yy = []
+        zz = []
+        for v in data:
+            xx.append(v[0])
+            yy.append(v[1])
+            zz.append(v[2])
+        return xx, yy, zz
+
+    def plotMagnetometer3D(self, data, title=None):
+
+        X, Y, Z = self.split(data)
+        fig = plt.figure()
+        ax = fig.gca(projection='3d')
+
+        ax.plot(X, Y, Z, '.b')
+        ax.set_xlabel('$\mu$T')
+        ax.set_ylabel('$\mu$T')
+        ax.set_zlabel('$\mu$T')
+        ax.set_box_aspect(aspect = (1,0.67,0.67))
+
+        max_range = np.array([max(X) - min(X), max(Y) - min(Y), max(Z) - min(Z)]).max()
+        Xb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][0].flatten() + 0.5 * (max(X) - min(X))
+        Yb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][1].flatten() + 0.5 * (max(Y) - min(Y))
+        Zb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][2].flatten() + 0.5 * (max(Z) - min(Z))
+
+
+        # Comment or uncomment following both lines to test the fake bounding box:
+        for xb, yb, zb in zip(Xb, Yb, Zb):
+            ax.plot([xb], [yb], [zb], 'w')
+
+
+        if title:
+            plt.title(title)
+
+        plt.savefig(str(self.plot_count) + '.png')
+        plt.clf()
+        self.plot_count += 1
+
+    def plotMagnetometer(self, data, title=None):
+        x, y, z = self.split(data)
+        plt.plot(x, y, '.b', x, z, '.r', z, y, '.g')
+        plt.xlabel('$\mu$T')
+        plt.ylabel('$\mu$T')
+
+        plt.axis('equal')
+        plt.grid(True)
+        if title:
+            plt.title(title)
+
+        plt.savefig(str(self.plot_count) + '.png')
+        plt.clf()
+        self.plot_count += 1
+
+    def loadRawData(self):
+        data = np.loadtxt("/Users/agarde/Desktop/SmartFinData/smartfin-tools/smartfin/first_edit.csv", delimiter=',')
+        print("shape of data:", data.shape)
+        # print("datatype of data:",data.dtype)
         print("First 5 rows raw:\n", data[:5])
-        
+        return data
+
+    def createMatrices(self):
+        data = self.loadRawData()
+
+        self.plotMagnetometer(data,"Uncalibrated 2D")
+        self.plotMagnetometer3D(data, "Uncalibrated 3D")
+
+
         # ellipsoid fit
         s = np.array(data).T
         M, n, d = self.__ellipsoid_fit(s)
@@ -64,40 +136,21 @@ class Magnetometer(object):
         self.b = -np.dot(M_1, n)
         self.A_1 = np.real(self.F / np.sqrt(np.dot(n.T, np.dot(M_1, n)) - d) * linalg.sqrtm(M))
         
-        #print("M:\n", M, "\nn:\n", n, "\nd:\n", d)        
-        #print("M_1:\n",M_1, "\nb:\n", self.b, "\nA_1:\n", self.A_1)
-        
+
         print("Soft iron transformation matrix:\n",self.A_1)
         print("Hard iron bias:\n", self.b)
 
-        plt.rcParams["figure.autolayout"] = True
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(data[:,0], data[:,1], data[:,2], marker='o', color='r')
+        pd.DataFrame(self.A_1).to_csv("SoftIron.csv", index=False)
+        pd.DataFrame(self.b).to_csv("HardIron.csv",  index=False)
 
-        result = [] 
-        for row in data: 
-        
-            # subtract the hard iron offset
-            xm_off = row[0]-self.b[0]
-            ym_off  = row[1]-self.b[1]
-            zm_off  = row[2]-self.b[2]
-            
-            #multiply by the inverse soft iron offset
-            xm_cal = xm_off *  self.A_1[0,0] + ym_off *  self.A_1[0,1]  + zm_off *  self.A_1[0,2] 
-            ym_cal = xm_off *  self.A_1[1,0] + ym_off *  self.A_1[1,1]  + zm_off *  self.A_1[1,2] 
-            zm_cal = xm_off *  self.A_1[2,0] + ym_off *  self.A_1[2,1]  + zm_off *  self.A_1[2,2] 
 
-            result = np.append(result, np.array([xm_cal, ym_cal, zm_cal]) )#, axis=0 )
-            #result_hard_iron_bias = np.append(result, np.array([xm_off, ym_off, zm_off]) )
+        result = self.applyMatrices()
 
-        result = result.reshape(-1, 3)
-        
-        ax.scatter(result[:,0], result[:,1], result[:,2], marker='o', color='g')
-        plt.show()
-        
+        self.plotMagnetometer(result,"Calibrated 2D")
+        self.plotMagnetometer3D(result, "Calibrated 3D")
+
+
         print("First 5 rows calibrated:\n", result[:5])
-        np.savetxt('out.txt', result, fmt='%f', delimiter=' ,')
 
         print("*************************" )        
         print("code to paste : " )
@@ -118,6 +171,125 @@ class Magnetometer(object):
         print("double soft_iron_bias_zy = " , float(self.A_1[1,2]), ";")
         print("double soft_iron_bias_zz = " , float(self.A_1[2,2]), ";")
         print("\n")
+
+        return result
+
+    def getHeading(self, result):
+        x, y, z = self.split(result)
+
+        headings = []
+
+        with open("heading.txt", 'w') as df:
+            for i in range(len(x)):
+               #heading = math.atan2(x[i], z[i]) * (180 / math.pi)
+                heading = math.atan2(z[i], x[i])
+               # If heading is negative, convert to positive, 2 x pi is a full circle in Radians
+                if heading < 0:
+                    heading += 2 * math.pi
+
+                # Convert heading from Radians to Degrees
+                heading = math.degrees(heading)
+                # Round heading to nearest full degree
+                heading = round(heading)
+                if(heading == 1):
+                    continue
+                headings.append(heading)
+                df.write(str(heading) + '\n')
+
+
+    def plotHeadings(self):
+        headings = np.loadtxt("heading"
+                              ".txt").astype(np.int)
+        #headings = list(headings)
+        y_ax = []
+        [y_ax.append(i) for i in range(len(headings))]
+
+        plt.scatter(y_ax, headings, s=10) #Cartesian Graph
+        plt.title('Heading vs Time')
+        plt.xlabel('Time')
+        plt.ylabel('Degrees')
+        plt.savefig("scatterHeadings.png", dpi=300)
+
+        plt.clf()
+
+        r = np.arange(len(headings)) #Polar graph
+        arr = np.array(headings)
+        theta = (arr / 180) * math.pi + math.pi / 2
+        fig, ax = plt.subplots(subplot_kw={'projection': 'polar'})
+        labels = [item.get_text() for item in ax.get_xticklabels()]
+        labels[0], labels[1], labels[2], labels[3], \
+        labels[4], labels[5], labels[6], labels[7] = 'E', 'NE', 'N', 'NW', 'W', 'SW', 'S', 'SE'
+        ax.set_xticklabels(labels)
+        ax.set_yticklabels([])
+        ax.scatter(theta, r, marker=',', s=1, cmap = 'winter')
+        plt.savefig("polarHeadings.png", dpi=1000)
+
+
+
+
+
+
+    def applyMatrices(self):
+        data = self.loadRawData()
+        result = []
+        hardIron = pd.read_csv("HardIron.csv").to_numpy()
+        softIron = pd.read_csv("SoftIron.csv").to_numpy()
+
+        for row in data:
+            # subtract the hard iron offset
+            xm_off = row[0] - hardIron[0]
+            ym_off = row[1] - hardIron[1]
+            zm_off = row[2] - hardIron[2]
+
+            # multiply by the inverse soft iron offset
+            xm_cal = xm_off * softIron[0, 0] + ym_off * softIron[0, 1] + zm_off * softIron[0, 2]
+            ym_cal = xm_off * softIron[1, 0] + ym_off * softIron[1, 1] + zm_off * softIron[1, 2]
+            zm_cal = xm_off * softIron[2, 0] + ym_off * softIron[2, 1] + zm_off * softIron[2, 2]
+
+            result = np.append(result, np.array([xm_cal, ym_cal, zm_cal]))  # , axis=0 )
+            # result_hard_iron_bias = np.append(result, np.array([xm_off, ym_off, zm_off]) )
+
+        result = result.reshape(-1, 3)
+        result = result / 100
+
+
+        np.savetxt('rawResult.txt', result, fmt='%f', delimiter=' ,')
+
+        return result
+
+
+    def calculateAverageDirection(self, numIntervals, sessionTime):
+        timePerInterval = sessionTime / numIntervals
+        current_interval = 0
+        headingSum = 0
+        headingIndex = 0
+        avgHeading = []
+
+        with open("heading.txt", 'r') as hFile:
+
+            totalHeadings = hFile.readlines()
+            fileLength = len(totalHeadings)
+            linesPerInterval = int(fileLength / numIntervals)
+            print(linesPerInterval)
+            while headingIndex < fileLength:
+                headingSum += int(totalHeadings[headingIndex])
+                if headingIndex % linesPerInterval == 0 and headingIndex != 0:
+                    avgHeading.append(headingSum / linesPerInterval)
+                    headingSum = 0
+                headingIndex += 1
+
+            for avg in avgHeading:
+                text = "The average heading from {}s to {}s is {:.2f}:".format(int(current_interval), current_interval + timePerInterval, avg)
+                print(text)
+                current_interval += timePerInterval
+
+    def giveDirection(self, heading):
+        pass
+
+
+
+
+
 
 
 
@@ -187,4 +359,10 @@ class Magnetometer(object):
         
         
 if __name__=='__main__':
-        Magnetometer().run()
+
+        #Magnetometer().createMatrices() DO NOT RUN THIS UNLESS YOU WANT TO CREATE NEW MATRICES
+        result = Magnetometer().applyMatrices()
+        Magnetometer().getHeading(result)
+        Magnetometer().plotHeadings()
+        Magnetometer().calculateAverageDirection(50, 1100)
+
